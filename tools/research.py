@@ -40,30 +40,46 @@ Category-specific details fields:
 Return ONLY valid JSON, no other text."""
 
 
-def research_item(client: anthropic.Anthropic, raw_input: str) -> dict:
-    """Use Claude with web search to research a single item."""
-    models = ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"]
-    max_retries = 5
+def call_api(client: anthropic.Anthropic, model: str, messages: list) -> anthropic.types.Message:
+    """Call the API with retry logic for overloaded errors."""
+    max_retries = 4
     for attempt in range(max_retries):
-        model = models[0] if attempt < 3 else models[1]
         try:
-            response = client.messages.create(
+            return client.messages.create(
                 model=model,
-                max_tokens=1024,
+                max_tokens=4096,
                 system=SYSTEM_PROMPT,
                 tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
-                messages=[{"role": "user", "content": f"Research this: {raw_input}"}],
+                messages=messages,
             )
-            break
         except anthropic.APIStatusError as e:
             if e.status_code in (429, 529) and attempt < max_retries - 1:
-                wait = 5 * (attempt + 1)
-                print(f"  Retrying in {wait}s (status {e.status_code}, model {model})...")
+                wait = 10 * (attempt + 1)
+                print(f"    Retrying in {wait}s (status {e.status_code})...")
                 time.sleep(wait)
             else:
                 raise
 
-    # Extract the text response (may come after tool use blocks)
+
+def research_item(client: anthropic.Anthropic, raw_input: str) -> dict:
+    """Use Claude with web search to research a single item."""
+    model = "claude-sonnet-4-20250514"
+    messages = [{"role": "user", "content": f"Research this: {raw_input}"}]
+
+    # Agentic loop — keep going until we get a final text response
+    for _turn in range(10):
+        response = call_api(client, model, messages)
+
+        if response.stop_reason == "end_turn":
+            break
+
+        # Model wants to continue (e.g. after web search) — append and loop
+        messages.append({"role": "assistant", "content": response.content})
+        messages.append({"role": "user", "content": [
+            {"type": "text", "text": "Continue."}
+        ]})
+
+    # Extract the text response from the final message
     text_content = ""
     for block in response.content:
         if block.type == "text":
@@ -85,12 +101,11 @@ def research_item(client: anthropic.Anthropic, raw_input: str) -> dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # Look for JSON object within the text
         start = text.find("{")
         end = text.rfind("}") + 1
         if start != -1 and end > start:
             return json.loads(text[start:end])
-        raise
+        raise ValueError(f"Could not parse JSON from response: {text[:200]}")
 
 
 def main():
