@@ -63,7 +63,7 @@ def call_api(client: anthropic.Anthropic, model: str, messages: list) -> anthrop
 
 def research_item(client: anthropic.Anthropic, raw_input: str) -> dict:
     """Use Claude with web search to research a single item."""
-    model = "claude-sonnet-4-20250514"
+    model = "claude-haiku-4-5-20251001"
     messages = [{"role": "user", "content": f"Research this: {raw_input}"}]
 
     # Agentic loop — keep going until we get a final text response
