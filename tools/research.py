@@ -42,7 +42,7 @@ Return ONLY valid JSON, no other text."""
 
 def research_item(client: anthropic.Anthropic, raw_input: str) -> dict:
     """Use Claude with web search to research a single item."""
-    models = ["claude-sonnet-4-6-20250514", "claude-haiku-4-5-20251001"]
+    models = ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"]
     max_retries = 5
     for attempt in range(max_retries):
         model = models[0] if attempt < 3 else models[1]
