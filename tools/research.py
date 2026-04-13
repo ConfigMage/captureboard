@@ -4,6 +4,7 @@
 import json
 import os
 import sys
+import time
 
 import anthropic
 from supabase import create_client
@@ -41,13 +42,24 @@ Return ONLY valid JSON, no other text."""
 
 def research_item(client: anthropic.Anthropic, raw_input: str) -> dict:
     """Use Claude with web search to research a single item."""
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
-        messages=[{"role": "user", "content": f"Research this: {raw_input}"}],
-    )
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
+                messages=[{"role": "user", "content": f"Research this: {raw_input}"}],
+            )
+            break
+        except anthropic.APIStatusError as e:
+            if e.status_code in (429, 529) and attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                print(f"  Retrying in {wait}s (status {e.status_code})...")
+                time.sleep(wait)
+            else:
+                raise
 
     # Extract the text response (may come after tool use blocks)
     text_content = ""
