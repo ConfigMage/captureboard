@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import time
+import urllib.request
 
 import anthropic
 from supabase import create_client
@@ -12,19 +13,27 @@ from supabase import create_client
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
 
 SYSTEM_PROMPT = """You are a research assistant that outputs ONLY JSON. No prose, no explanation, no markdown.
 
-The user gives you something to check out. Use web search to research it, then respond with exactly one JSON object:
+The user gives you something to check out. Use web search to research it thoroughly, then respond with exactly one JSON object:
 
-{"title":"proper title","category":"movie|tv|book|podcast|article|music|misc","summary":"2-3 sentence pitch for why it's worth checking out","source_url":"URL or null","details":{}}
+{"title":"proper title","category":"movie|tv|book|podcast|article|music|misc","summary":"...","source_url":"primary URL or null","sources":["url1","url2"],"details":{}}
+
+Field guidelines:
+- summary: 4-6 sentences. Start with what it is and why it's interesting. Include key context (who made it, when, critical reception). End with who would enjoy it and why. Be specific and compelling, not generic.
+- source_url: the single best link (official site, Wikipedia, etc.)
+- sources: array of 2-5 URLs you found useful during research. Include a mix — official sites, reviews, articles. These help the user dig deeper.
+- details: category-specific metadata (see below). Be thorough — fill in every field you can find.
 
 Details fields by category:
-- movie/tv: year, director, cast[], genre, where_to_watch[], rating
-- book: author, genre, page_count, goodreads_rating
-- podcast: show_name, episode_title, duration, topics[]
+- movie/tv: year, director, cast[], genre, where_to_watch[], rating, seasons (tv only), status (tv: "ongoing"/"ended")
+- book: author, genre, page_count, goodreads_rating, year_published
+- podcast: show_name, episode_title, duration, topics[], host
 - article: author, publication, date_published, key_takeaways[]
-- music: artist, album, genre, similar_to[]
+- music: artist, album, genre, similar_to[], year
+- misc: include whatever fields are relevant to the item
 
 YOUR ENTIRE RESPONSE MUST BE A SINGLE JSON OBJECT. No other text before or after."""
 
@@ -38,7 +47,7 @@ def call_api(client: anthropic.Anthropic, model: str, messages: list) -> anthrop
                 model=model,
                 max_tokens=4096,
                 system=SYSTEM_PROMPT,
-                tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
+                tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 10}],
                 messages=messages,
             )
         except anthropic.APIStatusError as e:
@@ -53,7 +62,7 @@ def call_api(client: anthropic.Anthropic, model: str, messages: list) -> anthrop
 def research_item(client: anthropic.Anthropic, raw_input: str) -> dict:
     """Use Claude with web search to research a single item."""
     model = "claude-haiku-4-5-20251001"
-    messages = [{"role": "user", "content": f"Research this: {raw_input}"}]
+    messages = [{"role": "user", "content": f"Research this thoroughly: {raw_input}"}]
 
     # Agentic loop — keep going until we get a final text response
     for _turn in range(10):
@@ -78,7 +87,7 @@ def research_item(client: anthropic.Anthropic, raw_input: str) -> dict:
     messages.append({"role": "user", "content": (
         "Please respond with ONLY a JSON object, no other text. "
         "Format: {\"title\":\"...\",\"category\":\"...\",\"summary\":\"...\","
-        "\"source_url\":\"...\",\"details\":{...}}"
+        "\"source_url\":\"...\",\"sources\":[],\"details\":{...}}"
     )})
     response = call_api(client, model, messages)
     result = extract_json(response)
@@ -120,6 +129,61 @@ def extract_json(response) -> dict | None:
         return None
 
 
+def post_to_slack(data: dict):
+    """Post researched item summary to Slack."""
+    if not SLACK_WEBHOOK_URL:
+        return
+
+    category = data.get("category", "misc")
+    title = data.get("title", "Unknown")
+    summary = data.get("summary", "")
+    source_url = data.get("source_url")
+    sources = data.get("sources", [])
+    details = data.get("details", {})
+
+    # Build detail lines
+    detail_parts = []
+    for key, value in details.items():
+        if value is None or value == "" or value == []:
+            continue
+        label = key.replace("_", " ").title()
+        if isinstance(value, list):
+            detail_parts.append(f"*{label}:* {', '.join(str(v) for v in value)}")
+        else:
+            detail_parts.append(f"*{label}:* {value}")
+
+    # Build sources section
+    source_lines = ""
+    if sources:
+        links = [f"<{url}|{i+1}>" for i, url in enumerate(sources) if url]
+        if links:
+            source_lines = f"\n\n:link: *Read more:* {' | '.join(links)}"
+
+    detail_text = "\n".join(detail_parts)
+
+    text = (
+        f":sparkles: *{title}* `{category}`\n\n"
+        f"{summary}\n\n"
+        f"{detail_text}"
+        f"{source_lines}"
+    )
+
+    if source_url:
+        text += f"\n\n<{source_url}|View source>"
+
+    payload = json.dumps({"text": text}).encode("utf-8")
+    req = urllib.request.Request(
+        SLACK_WEBHOOK_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req)
+    except Exception as e:
+        print(f"  Slack notification failed: {e}", file=sys.stderr)
+
+
 def main():
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -151,6 +215,9 @@ def main():
             ).eq("id", item["id"]).execute()
 
             print(f"  ✓ {data.get('title')} [{data.get('category')}]")
+
+            # Notify Slack
+            post_to_slack(data)
 
         except Exception as e:
             print(f"  ✗ Error researching '{item['raw_input']}': {e}", file=sys.stderr)
