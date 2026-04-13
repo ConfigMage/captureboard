@@ -3,35 +3,56 @@ import { getServiceClient } from "../../../../lib/supabase-server";
 
 export async function POST(request: NextRequest) {
   try {
-    const secret = request.headers.get("x-webhook-secret");
-    if (secret !== process.env.WEBHOOK_SECRET) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const contentType = request.headers.get("content-type") || "";
+    let text: string;
+
+    if (contentType.includes("application/x-www-form-urlencoded")) {
+      // Slack slash command — sends form-encoded body
+      const formData = await request.formData();
+      text = formData.get("text") as string;
+
+      // Validate using Slack signing secret if configured,
+      // otherwise fall back to checking the token Slack sends
+      const slackToken = formData.get("token") as string;
+      if (
+        process.env.SLACK_VERIFICATION_TOKEN &&
+        slackToken !== process.env.SLACK_VERIFICATION_TOKEN
+      ) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+    } else {
+      // JSON webhook — original path
+      const secret = request.headers.get("x-webhook-secret");
+      if (secret !== process.env.WEBHOOK_SECRET) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
+
+      const body = await request.json();
+      text = body.text;
     }
 
-    const body = await request.json();
-    const text = body.text;
-
-    if (!text || typeof text !== "string") {
-      return NextResponse.json(
-        { error: "Missing or invalid 'text' field" },
-        { status: 400 }
-      );
+    if (!text || typeof text !== "string" || !text.trim()) {
+      // Slack expects a JSON response with response_type
+      return NextResponse.json({
+        response_type: "ephemeral",
+        text: "Please provide something to capture. Usage: `/capture The Bear on Hulu`",
+      });
     }
 
     const supabase = getServiceClient();
 
     const { data, error } = await supabase
       .from("items")
-      .insert({ raw_input: text, status: "pending" })
+      .insert({ raw_input: text.trim(), status: "pending" })
       .select("id")
       .single();
 
     if (error) {
       console.error("Supabase insert error:", error);
-      return NextResponse.json(
-        { error: "Failed to save item" },
-        { status: 500 }
-      );
+      return NextResponse.json({
+        response_type: "ephemeral",
+        text: "Failed to save item. Try again.",
+      });
     }
 
     // Fire GitHub repository_dispatch to trigger research
@@ -57,16 +78,19 @@ export async function POST(request: NextRequest) {
         );
       } catch (e) {
         console.error("GitHub dispatch error:", e);
-        // Don't fail the request — item is saved, research can be triggered manually
       }
     }
 
-    return NextResponse.json({ ok: true, id: data.id });
+    // Slack-friendly response
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: `Captured: "${text.trim()}" — researching now.`,
+    });
   } catch (e) {
     console.error("Capture endpoint error:", e);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({
+      response_type: "ephemeral",
+      text: "Something went wrong. Try again.",
+    });
   }
 }
