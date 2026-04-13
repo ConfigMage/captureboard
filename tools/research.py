@@ -13,31 +13,20 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 
-SYSTEM_PROMPT = """You are a research assistant. The user will give you something they want to check out — it could be a movie, TV show, book, podcast, article, music, or something else.
+SYSTEM_PROMPT = """You are a research assistant that outputs ONLY JSON. No prose, no explanation, no markdown.
 
-Your job:
-1. Figure out what it is using web search.
-2. Categorize it as one of: movie, tv, book, podcast, article, music, misc
-3. Research it and gather key details.
-4. Write a compelling 2-3 sentence summary — a pitch for why it's worth checking out.
+The user gives you something to check out. Use web search to research it, then respond with exactly one JSON object:
 
-Return a JSON object (no markdown fencing) with these fields:
-{
-  "title": "The proper title",
-  "category": "movie|tv|book|podcast|article|music|misc",
-  "summary": "2-3 sentence compelling pitch",
-  "source_url": "relevant URL if found, or null",
-  "details": { ... category-specific metadata ... }
-}
+{"title":"proper title","category":"movie|tv|book|podcast|article|music|misc","summary":"2-3 sentence pitch for why it's worth checking out","source_url":"URL or null","details":{}}
 
-Category-specific details fields:
-- movie/tv: year, director, cast (array), genre, where_to_watch (array), rating
+Details fields by category:
+- movie/tv: year, director, cast[], genre, where_to_watch[], rating
 - book: author, genre, page_count, goodreads_rating
-- podcast: show_name, episode_title, duration, topics (array)
-- article: author, publication, date_published, key_takeaways (array)
-- music: artist, album, genre, similar_to (array)
+- podcast: show_name, episode_title, duration, topics[]
+- article: author, publication, date_published, key_takeaways[]
+- music: artist, album, genre, similar_to[]
 
-Return ONLY valid JSON, no other text."""
+YOUR ENTIRE RESPONSE MUST BE A SINGLE JSON OBJECT. No other text before or after."""
 
 
 def call_api(client: anthropic.Anthropic, model: str, messages: list) -> anthropic.types.Message:
@@ -79,33 +68,56 @@ def research_item(client: anthropic.Anthropic, raw_input: str) -> dict:
             {"type": "text", "text": "Continue."}
         ]})
 
-    # Extract the text response from the final message
+    result = extract_json(response)
+    if result:
+        return result
+
+    # If no JSON in the response, ask the model to reformat
+    print("    No JSON found, asking model to reformat...")
+    messages.append({"role": "assistant", "content": response.content})
+    messages.append({"role": "user", "content": (
+        "Please respond with ONLY a JSON object, no other text. "
+        "Format: {\"title\":\"...\",\"category\":\"...\",\"summary\":\"...\","
+        "\"source_url\":\"...\",\"details\":{...}}"
+    )})
+    response = call_api(client, model, messages)
+    result = extract_json(response)
+    if result:
+        return result
+
+    raise ValueError("Could not get JSON response from Claude")
+
+
+def extract_json(response) -> dict | None:
+    """Extract a JSON object from the API response."""
     text_content = ""
     for block in response.content:
         if block.type == "text":
             text_content += block.text
 
-    if not text_content.strip():
-        raise ValueError(f"No text response from Claude. Stop reason: {response.stop_reason}. "
-                         f"Content types: {[b.type for b in response.content]}")
-
-    # Parse JSON from the response — strip markdown fencing if present
     text = text_content.strip()
+    if not text:
+        return None
+
+    # Strip markdown fencing
     if text.startswith("```"):
         text = text.split("\n", 1)[1] if "\n" in text else text[3:]
         if text.endswith("```"):
             text = text[:-3]
         text = text.strip()
 
-    # Try to find JSON object in the response if direct parse fails
     try:
         return json.loads(text)
     except json.JSONDecodeError:
+        # Look for JSON object within the text
         start = text.find("{")
         end = text.rfind("}") + 1
         if start != -1 and end > start:
-            return json.loads(text[start:end])
-        raise ValueError(f"Could not parse JSON from response: {text[:200]}")
+            try:
+                return json.loads(text[start:end])
+            except json.JSONDecodeError:
+                pass
+        return None
 
 
 def main():
