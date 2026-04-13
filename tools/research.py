@@ -42,11 +42,13 @@ Return ONLY valid JSON, no other text."""
 
 def research_item(client: anthropic.Anthropic, raw_input: str) -> dict:
     """Use Claude with web search to research a single item."""
-    max_retries = 3
+    models = ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"]
+    max_retries = 5
     for attempt in range(max_retries):
+        model = models[0] if attempt < 3 else models[1]
         try:
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=model,
                 max_tokens=1024,
                 system=SYSTEM_PROMPT,
                 tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
@@ -55,8 +57,8 @@ def research_item(client: anthropic.Anthropic, raw_input: str) -> dict:
             break
         except anthropic.APIStatusError as e:
             if e.status_code in (429, 529) and attempt < max_retries - 1:
-                wait = 2 ** (attempt + 1)
-                print(f"  Retrying in {wait}s (status {e.status_code})...")
+                wait = 5 * (attempt + 1)
+                print(f"  Retrying in {wait}s (status {e.status_code}, model {model})...")
                 time.sleep(wait)
             else:
                 raise
