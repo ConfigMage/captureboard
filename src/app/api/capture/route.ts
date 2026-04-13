@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServiceClient } from "../../../../lib/supabase-server";
 
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 export async function POST(request: NextRequest) {
   try {
     const contentType = request.headers.get("content-type") || "";
