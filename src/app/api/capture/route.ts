@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
 
     if (githubToken && githubRepo) {
       try {
-        await fetch(
+        const dispatchRes = await fetch(
           `https://api.github.com/repos/${githubRepo}/dispatches`,
           {
             method: "POST",
@@ -79,9 +79,19 @@ export async function POST(request: NextRequest) {
             }),
           }
         );
+        console.log(`GitHub dispatch: ${dispatchRes.status} ${dispatchRes.statusText}`);
+        if (!dispatchRes.ok) {
+          const body = await dispatchRes.text();
+          console.error("GitHub dispatch failed:", body);
+        }
       } catch (e) {
         console.error("GitHub dispatch error:", e);
       }
+    } else {
+      console.error("GitHub dispatch skipped — missing env vars:", {
+        hasToken: !!githubToken,
+        hasRepo: !!githubRepo,
+      });
     }
 
     // Slack-friendly response
