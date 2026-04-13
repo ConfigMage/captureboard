@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -97,6 +98,25 @@ def research_item(client: anthropic.Anthropic, raw_input: str) -> dict:
     raise ValueError("Could not get JSON response from Claude")
 
 
+def clean_data(obj):
+    """Recursively strip citation markup from all string values."""
+    if isinstance(obj, str):
+        return strip_citations(obj)
+    if isinstance(obj, dict):
+        return {k: clean_data(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [clean_data(v) for v in obj]
+    return obj
+
+
+def strip_citations(text: str) -> str:
+    """Remove <cite> tags and other markup from web search responses."""
+    text = re.sub(r'<cite[^>]*>.*?</cite>', '', text, flags=re.DOTALL)
+    text = re.sub(r'</?[a-zA-Z][^>]*>', '', text)
+    text = re.sub(r'\s{2,}', ' ', text)
+    return text.strip()
+
+
 def extract_json(response) -> dict | None:
     """Extract a JSON object from the API response."""
     text_content = ""
@@ -104,7 +124,7 @@ def extract_json(response) -> dict | None:
         if block.type == "text":
             text_content += block.text
 
-    text = text_content.strip()
+    text = strip_citations(text_content.strip())
     if not text:
         return None
 
@@ -201,7 +221,7 @@ def main():
     for item in items:
         print(f"\nResearching: {item['raw_input']}")
         try:
-            data = research_item(client, item["raw_input"])
+            data = clean_data(research_item(client, item["raw_input"]))
 
             supabase.table("items").update(
                 {
