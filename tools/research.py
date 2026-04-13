@@ -42,7 +42,7 @@ Return ONLY valid JSON, no other text."""
 
 def research_item(client: anthropic.Anthropic, raw_input: str) -> dict:
     """Use Claude with web search to research a single item."""
-    models = ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"]
+    models = ["claude-sonnet-4-6-20250514", "claude-haiku-4-5-20251001"]
     max_retries = 5
     for attempt in range(max_retries):
         model = models[0] if attempt < 3 else models[1]
@@ -70,7 +70,8 @@ def research_item(client: anthropic.Anthropic, raw_input: str) -> dict:
             text_content += block.text
 
     if not text_content.strip():
-        raise ValueError("No text response from Claude")
+        raise ValueError(f"No text response from Claude. Stop reason: {response.stop_reason}. "
+                         f"Content types: {[b.type for b in response.content]}")
 
     # Parse JSON from the response — strip markdown fencing if present
     text = text_content.strip()
@@ -80,7 +81,16 @@ def research_item(client: anthropic.Anthropic, raw_input: str) -> dict:
             text = text[:-3]
         text = text.strip()
 
-    return json.loads(text)
+    # Try to find JSON object in the response if direct parse fails
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Look for JSON object within the text
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if start != -1 and end > start:
+            return json.loads(text[start:end])
+        raise
 
 
 def main():
